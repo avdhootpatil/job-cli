@@ -134,10 +134,10 @@ async function run() {
   }
 }
 
-// Run immediately, then every 2 minutes
+// Run immediately, then every 5 minutes
 run();
-setInterval(run, 2 * 60 * 1000);
+setInterval(run, 5 * 60 * 1000);
 
-console.log('LinkedIn Job Alert Cron started — running every 2 minutes');
+console.log('LinkedIn Job Alert Cron started — running every 5 minutes');
 console.log(`Searching: "React Developer" in India, past 24 hours`);
 console.log(`Logging jobs posted ≤ 5 hours ago`);

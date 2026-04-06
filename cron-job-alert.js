@@ -76,9 +76,9 @@ async function run() {
         location: 'India',
         datePosted: 'past-24-hours',
         experienceLevel: ['mid-senior'],
-        limit: 100,
+        limit: 125,
       },
-    });
+    }, undefined, { timeout: 300000 });
 
     const text = res.content?.[0]?.text;
     if (!text) {
@@ -94,7 +94,7 @@ async function run() {
       return;
     }
 
-    console.log(`[FOUND] ${data.jobs.length} total jobs`);
+    console.log(`\n[FOUND] ${data.jobs.length} total jobs`);
 
     const seen = loadSeenJobs();
     const freshJobs = data.jobs.filter(
@@ -109,7 +109,13 @@ async function run() {
       console.log(
         `  -> ${job.title} | ${job.company} | ${job.location} | ${job.postedTimeAgo} | ${job.url}`,
       );
-      seen[job.id] = { title: job.title, url: job.url, notifiedAt: new Date().toISOString() };
+    }
+
+    // Track all fetched jobs as seen to avoid future duplicates
+    for (const job of data.jobs) {
+      if (!seen[job.id]) {
+        seen[job.id] = { title: job.title, url: job.url, notifiedAt: new Date().toISOString() };
+      }
     }
 
     if (freshJobs.length > 0) {

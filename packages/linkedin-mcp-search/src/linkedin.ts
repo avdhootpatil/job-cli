@@ -2,9 +2,9 @@
  * LinkedIn MCP - All LinkedIn operations consolidated
  */
 
-import axios from 'axios';
 import * as cheerio from 'cheerio';
 import type { Element } from 'domhandler';
+import { getPageHtml } from './browser.js';
 import type {
   JobSearchParams,
   JobSearchResult,
@@ -19,15 +19,7 @@ import type {
 // ============ Constants ============
 
 const LINKEDIN_BASE = 'https://www.linkedin.com';
-const JOBS_API = `${LINKEDIN_BASE}/jobs-guest/jobs/api`;
 
-const DEFAULT_HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept':
-    'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.5',
-};
 
 const JOB_TYPE_CODES: Record<JobType, string> = {
   'full-time': 'F',
@@ -125,13 +117,6 @@ export const JOB_FUNCTIONS = [
   'Healthcare Services',
 ];
 
-// ============ HTTP Client ============
-
-const client = axios.create({
-  baseURL: LINKEDIN_BASE,
-  headers: DEFAULT_HEADERS,
-  timeout: 30000,
-});
 
 // ============ URL Builders ============
 
@@ -274,7 +259,8 @@ function extractText($: cheerio.CheerioAPI, selectors: string[]): string {
   return '';
 }
 
-function parseJobCard(
+// Parse guest view job card (div.base-card)
+function parseGuestJobCard(
   $: cheerio.CheerioAPI,
   $card: cheerio.Cheerio<Element>,
 ): LinkedInJob | null {
@@ -318,17 +304,65 @@ function parseJobCard(
   };
 }
 
+// Parse authenticated view job card (div.job-card-container)
+function parseAuthJobCard(
+  $: cheerio.CheerioAPI,
+  $card: cheerio.Cheerio<Element>,
+): LinkedInJob | null {
+  const jobId = $card.attr('data-job-id');
+  if (!jobId) return null;
+
+  const titleLink = $card.find('.job-card-list__title--link, .job-card-container__link');
+  const title = titleLink.attr('aria-label')?.replace(/ with verification$/, '').trim()
+    || titleLink.find('span[aria-hidden="true"]').text().trim();
+  const company = $card.find('.artdeco-entity-lockup__subtitle span').first().text().trim();
+  const location = $card.find('.artdeco-entity-lockup__caption span').first().text().trim();
+  const companyLogo = $card.find('img').first().attr('src') || undefined;
+
+  // Time is injected as data-posted-time attribute by the browser module
+  const postedTimeAgo = $card.attr('data-posted-time') || '';
+
+  const cardText = $card.text().toLowerCase();
+
+  return {
+    id: jobId,
+    title: title || 'Unknown Title',
+    company: company || 'Unknown Company',
+    companyLogo,
+    location: location || 'Unknown Location',
+    workplaceType: detectWorkplaceType(location || cardText),
+    jobType: 'full-time',
+    postedDate: '',
+    postedTimeAgo: postedTimeAgo || 'Unknown',
+    salary: undefined,
+    url: `${LINKEDIN_BASE}/jobs/view/${jobId}`,
+    isEasyApply: cardText.includes('easy apply'),
+    isPromoted: cardText.includes('promoted'),
+  };
+}
+
 function parseJobListings(html: string): LinkedInJob[] {
   const $ = cheerio.load(html);
   const jobs: LinkedInJob[] = [];
 
+  // Try authenticated view first (div.job-card-container with data-job-id)
+  const authCards = $('div.job-card-container[data-job-id]');
+  if (authCards.length > 0) {
+    authCards.each((_: number, el: Element) => {
+      try {
+        const job = parseAuthJobCard($, $(el));
+        if (job) jobs.push(job);
+      } catch { /* skip */ }
+    });
+    return jobs;
+  }
+
+  // Fall back to guest view (div.base-card)
   $('div.base-card, li').each((_: number, el: Element) => {
     try {
-      const job = parseJobCard($, $(el));
+      const job = parseGuestJobCard($, $(el));
       if (job) jobs.push(job);
-    } catch {
-      /* skip */
-    }
+    } catch { /* skip */ }
   });
 
   return jobs;
@@ -336,8 +370,15 @@ function parseJobListings(html: string): LinkedInJob[] {
 
 function parseTotalResults(html: string): number | null {
   const $ = cheerio.load(html);
-  const text = $('span.results-context-header__job-count').text().trim();
-  const count = parseNumber(text);
+  // Authenticated view
+  const authText = $('.jobs-search-results-list__subtitle').text().trim();
+  if (authText) {
+    const count = parseNumber(authText);
+    if (count > 0) return count;
+  }
+  // Guest view
+  const guestText = $('span.results-context-header__job-count').text().trim();
+  const count = parseNumber(guestText);
   return count > 0 ? count : null;
 }
 
@@ -480,40 +521,61 @@ function parseCompanySearchResults(html: string): LinkedInCompany[] {
 // ============ Public API ============
 
 const DEFAULT_LIMIT = 25;
-const MAX_LIMIT = 100;
+const MAX_LIMIT = 200;
 
 export async function searchJobs(
   params: JobSearchParams,
 ): Promise<JobSearchResult> {
   const limit = Math.min(params.limit || DEFAULT_LIMIT, MAX_LIMIT);
-  const start = params.start || 0;
-  let allJobs: LinkedInJob[] = [];
-  let totalResults = 0;
 
   try {
-    let offset = start;
-    while (allJobs.length < limit) {
+    const seenIds = new Set<string>();
+    const uniqueJobs: LinkedInJob[] = [];
+    let totalResults = 0;
+    const maxPages = Math.min(Math.ceil(limit / 25), 5);
+
+    for (let page = 0; page < maxPages; page++) {
+      const offset = page * 25;
+      if (page > 0) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
       const url = buildSearchUrl({ ...params, start: offset });
-      const response = await client.get(url);
-      const jobs = parseJobListings(response.data);
-      totalResults = parseTotalResults(response.data) || jobs.length + offset;
-      allJobs = allJobs.concat(jobs);
-      if (jobs.length < 25) break; // no more results
-      offset += 25;
+      console.error(`[scraper] Fetching page ${page + 1}/${maxPages} (start=${offset})...`);
+
+      try {
+        const html = await getPageHtml(url);
+        const jobs = parseJobListings(html);
+        if (page === 0) {
+          totalResults = parseTotalResults(html) || 0;
+        }
+        console.error(`[scraper] Page ${page + 1}: got ${jobs.length} jobs`);
+        for (const job of jobs) {
+          console.error(`  -> ${job.title} | ${job.company} | ${job.location} | ${job.url}`);
+        }
+        if (jobs.length === 0) break;
+        for (const job of jobs) {
+          if (!seenIds.has(job.id)) {
+            seenIds.add(job.id);
+            uniqueJobs.push(job);
+          }
+        }
+      } catch (err) {
+        console.error(`[scraper] Page ${page + 1} failed: ${err instanceof Error ? err.message : err}`);
+        break;
+      }
     }
 
+    console.error(`[scraper] Total: ${uniqueJobs.length} unique jobs`);
+
     return {
-      jobs: allJobs.slice(0, limit),
-      totalResults,
-      currentPage: Math.floor(start / 25) + 1,
-      hasMore: allJobs.length >= limit,
+      jobs: uniqueJobs.slice(0, limit),
+      totalResults: totalResults || uniqueJobs.length,
+      currentPage: 1,
+      hasMore: uniqueJobs.length >= limit,
       searchParams: params,
     };
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      throw new Error(`LinkedIn search failed: ${error.message}`);
-    }
-    throw error;
+    throw new Error(`LinkedIn search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -559,12 +621,9 @@ export async function getJobDetails(jobId: string): Promise<JobDetails | null> {
   const htmlUrl = `/jobs/view/${jobId}`;
 
   try {
-    const response = await client.get(htmlUrl);
-    return parseJobDetails(response.data, jobId);
+    const html = await getPageHtml(`${LINKEDIN_BASE}${htmlUrl}`);
+    return parseJobDetails(html, jobId);
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 404) {
-      return null;
-    }
     throw new Error(
       `Failed to get job details: ${error instanceof Error ? error.message : 'Unknown error'}`,
     );
@@ -575,12 +634,9 @@ export async function getCompany(
   companyId: string,
 ): Promise<LinkedInCompany | null> {
   try {
-    const response = await client.get(`/company/${companyId}`);
-    return parseCompany(response.data, companyId);
+    const html = await getPageHtml(`${LINKEDIN_BASE}/company/${companyId}`);
+    return parseCompany(html, companyId);
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 404) {
-      return null;
-    }
     throw new Error(
       `Failed to get company: ${error instanceof Error ? error.message : 'Unknown error'}`,
     );
@@ -591,10 +647,10 @@ export async function searchCompanies(
   query: string,
 ): Promise<LinkedInCompany[]> {
   try {
-    const response = await client.get(
-      `/search/results/companies/?keywords=${encodeURIComponent(query)}`,
+    const html = await getPageHtml(
+      `${LINKEDIN_BASE}/search/results/companies/?keywords=${encodeURIComponent(query)}`,
     );
-    return parseCompanySearchResults(response.data);
+    return parseCompanySearchResults(html);
   } catch (error) {
     throw new Error(
       `Company search failed: ${error instanceof Error ? error.message : 'Unknown error'}`,

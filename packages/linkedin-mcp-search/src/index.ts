@@ -10,6 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { tools } from './tools.js';
+import { closeBrowser } from './browser.js';
 import {
   searchJobs,
   searchRemoteJobs,
@@ -205,4 +206,14 @@ async function main(): Promise<void> {
 main().catch((error) => {
   console.error('Fatal error:', error);
   process.exit(1);
+});
+
+process.on('SIGINT', async () => {
+  await closeBrowser();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  await closeBrowser();
+  process.exit(0);
 });

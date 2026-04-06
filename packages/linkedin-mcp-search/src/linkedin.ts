@@ -549,9 +549,6 @@ export async function searchJobs(
           totalResults = parseTotalResults(html) || 0;
         }
         console.error(`[scraper] Page ${page + 1}: got ${jobs.length} jobs`);
-        for (const job of jobs) {
-          console.error(`  -> ${job.title} | ${job.company} | ${job.location} | ${job.url}`);
-        }
         if (jobs.length === 0) break;
         for (const job of jobs) {
           if (!seenIds.has(job.id)) {

@@ -41,6 +41,7 @@ async function getBrowser(): Promise<Browser> {
 export async function getPageHtml(url: string): Promise<string> {
   const b = await getBrowser();
   const page = await b.newPage();
+  await page.setViewport({ width: 1920, height: 1080 });
 
   try {
     await page.goto(url, {

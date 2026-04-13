@@ -1,6 +1,7 @@
 {
   "name": "linkedin-job-cli",
   "private": true,
+  "type": "module",
   "packageManager": "npm@10.9.2",
   "workspaces": [
     "apps/*",
@@ -10,7 +11,7 @@
     "dev": "turbo run dev --filter=api --filter=web",
     "build": "turbo run build",
     "start": "turbo run start",
-    "chrome": "/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222 --user-data-dir=\"$HOME/.chrome-scraper\" &",
+    "chrome": "/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222 --user-data-dir=\"$HOME/.chrome-scraper\" --start-maximized &",
     "cron": "node cron-job-alert.js"
   },
   "devDependencies": {

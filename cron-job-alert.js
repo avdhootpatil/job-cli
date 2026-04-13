@@ -14,6 +14,23 @@ const MCP_SERVER_PATH = path.join(
 );
 const SEEN_JOBS_FILE = path.join(__dirname, '.seen-jobs.json');
 
+// Exclude jobs whose title contains any of these (case-insensitive)
+const EXCLUDE_TITLE_KEYWORDS = [
+  '.net', 'dotnet', 'c#',
+  'java', 'spring boot', 'j2ee',
+  'python', 'django', 'flask',
+  'angular', 'vue',
+  'ruby', 'rails',
+  'php', 'laravel',
+  'golang', 'rust',
+  'ios', 'swift', 'kotlin', 'android',
+  'salesforce', 'sap', 'mainframe', 'cobol',
+  'devops', 'sre', 'platform engineer',
+  'qa', 'sdet', 'test engineer', 'quality',
+  'data engineer', 'data scientist', 'ml engineer', 'machine learning',
+  'blockchain', 'web3', 'solidity',
+];
+
 // Load previously seen job IDs to avoid duplicate SMS
 function loadSeenJobs() {
   try {
@@ -72,11 +89,13 @@ async function run() {
     const res = await client.callTool({
       name: 'search_jobs',
       arguments: {
-        keywords: 'Front end developer',
+        keywords: 'Front end developer, React Developer, Senior Frontend Developer',
         location: 'India',
         datePosted: 'past-24-hours',
         experienceLevel: ['mid-senior'],
-        limit: 125,
+        workplaceType: ['remote'],
+        easyApply: true,
+        limit: 50,
       },
     }, undefined, { timeout: 300000 });
 
@@ -101,14 +120,38 @@ async function run() {
       job => !seen[job.id] && (isPostedWithinHours(job.postedTimeAgo, 5) || parseInt(job.applicants || '0') < 30),
     );
 
+    const relevantJobs = freshJobs.filter(job => {
+      const title = job.title.toLowerCase();
+      return !EXCLUDE_TITLE_KEYWORDS.some(kw => title.includes(kw.toLowerCase()));
+    });
+    const excluded = freshJobs.length - relevantJobs.length;
+
     console.log(
       `[FRESH] ${freshJobs.length} jobs (within 5 hours or < 30 applicants, not yet notified)`,
     );
+    if (excluded > 0) console.log(`[FILTERED] ${excluded} jobs excluded by title keywords`);
+    console.log();
 
-    for (const job of freshJobs) {
-      console.log(
-        `  -> ${job.title} | ${job.company} | ${job.location} | ${job.postedTimeAgo} | ${job.url}`,
-      );
+    if (relevantJobs.length > 0) {
+      // Calculate column widths
+      const cols = {
+        num: String(relevantJobs.length).length + 1,
+        title: Math.min(50, Math.max(5, ...relevantJobs.map(j => j.title.length))),
+        company: Math.min(30, Math.max(7, ...relevantJobs.map(j => j.company.length))),
+        location: Math.min(40, Math.max(8, ...relevantJobs.map(j => j.location.length))),
+        posted: Math.min(20, Math.max(6, ...relevantJobs.map(j => j.postedTimeAgo.length))),
+      };
+
+      const pad = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n);
+      const header = `${'#'.padStart(cols.num)}  ${pad('Title', cols.title)}  ${pad('Company', cols.company)}  ${pad('Location', cols.location)}  ${pad('Posted', cols.posted)}  URL`;
+      console.log(header);
+      console.log('-'.repeat(header.length));
+
+      relevantJobs.forEach((job, i) => {
+        console.log(
+          `${String(i + 1).padStart(cols.num)}  ${pad(job.title, cols.title)}  ${pad(job.company, cols.company)}  ${pad(job.location, cols.location)}  ${pad(job.postedTimeAgo, cols.posted)}  ${job.url}`,
+        );
+      });
     }
 
     // Track all fetched jobs as seen to avoid future duplicates
@@ -118,8 +161,8 @@ async function run() {
       }
     }
 
-    if (freshJobs.length > 0) {
-      notify(freshJobs);
+    if (relevantJobs.length > 0) {
+      notify(relevantJobs);
     }
 
     // Clean up seen jobs older than 24 hours
@@ -145,5 +188,5 @@ run();
 setInterval(run, 10 * 60 * 1000);
 
 console.log('LinkedIn Job Alert Cron started — running every 10 minutes');
-console.log(`Searching: "Front end developer" in India, past 24 hours`);
+console.log(`Searching: "Front end developer" in India, past 24 hours, remote, easy apply`);
 console.log(`Logging jobs posted ≤ 5 hours ago`);

@@ -78,7 +78,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
         jobCount: result.jobs.length,
         jobs: result.jobs.map(j => ({
           id: j.id, title: j.title, company: j.company, location: j.location,
-          workplaceType: j.workplaceType, postedTimeAgo: j.postedTimeAgo,
+          workplaceType: j.workplaceType, postedTimeAgo: j.postedTimeAgo, applicants: j.applicants,
           salary: j.salary, isEasyApply: j.isEasyApply, isPromoted: j.isPromoted, url: j.url,
         })),
       });

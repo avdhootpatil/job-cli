@@ -319,8 +319,9 @@ function parseAuthJobCard(
   const location = $card.find('.artdeco-entity-lockup__caption span').first().text().trim();
   const companyLogo = $card.find('img').first().attr('src') || undefined;
 
-  // Time is injected as data-posted-time attribute by the browser module
+  // Time and applicants are injected as data attributes by the browser module
   const postedTimeAgo = $card.attr('data-posted-time') || '';
+  const applicants = $card.attr('data-applicants') || '0';
 
   const cardText = $card.text().toLowerCase();
 
@@ -334,6 +335,7 @@ function parseAuthJobCard(
     jobType: 'full-time',
     postedDate: '',
     postedTimeAgo: postedTimeAgo || 'Unknown',
+    applicants: applicants || '0',
     salary: undefined,
     url: `${LINKEDIN_BASE}/jobs/view/${jobId}`,
     isEasyApply: cardText.includes('easy apply'),

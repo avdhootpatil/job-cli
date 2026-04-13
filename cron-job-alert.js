@@ -72,7 +72,7 @@ async function run() {
     const res = await client.callTool({
       name: 'search_jobs',
       arguments: {
-        keywords: 'Frontend Developer, ReactJS Developer',
+        keywords: 'Front end developer',
         location: 'India',
         datePosted: 'past-24-hours',
         experienceLevel: ['mid-senior'],
@@ -98,11 +98,11 @@ async function run() {
 
     const seen = loadSeenJobs();
     const freshJobs = data.jobs.filter(
-      job => isPostedWithinHours(job.postedTimeAgo, 5) && !seen[job.id],
+      job => !seen[job.id] && (isPostedWithinHours(job.postedTimeAgo, 5) || parseInt(job.applicants || '0') < 30),
     );
 
     console.log(
-      `[FRESH] ${freshJobs.length} jobs posted within 5 hours (not yet notified)`,
+      `[FRESH] ${freshJobs.length} jobs (within 5 hours or < 30 applicants, not yet notified)`,
     );
 
     for (const job of freshJobs) {

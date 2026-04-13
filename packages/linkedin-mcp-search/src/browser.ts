@@ -90,10 +90,11 @@ export async function getPageHtml(url: string): Promise<string> {
 
     // Inject the times into the HTML as data attributes so the parser can read them
     if (Object.keys(jobTimes).length > 0) {
-      for (const [jobId, time] of Object.entries(jobTimes)) {
+      for (const [jobId, value] of Object.entries(jobTimes)) {
+        const [time, applicants] = value.split('||');
         html = html.replace(
           `data-job-id="${jobId}"`,
-          `data-job-id="${jobId}" data-posted-time="${time}"`
+          `data-job-id="${jobId}" data-posted-time="${time}" data-applicants="${applicants}"`
         );
       }
     }
@@ -131,8 +132,9 @@ async function extractJobTimes(page: import('puppeteer-core').Page): Promise<Rec
       const topCard = document.querySelector('.job-details-jobs-unified-top-card__primary-description-container');
       const topText = topCard ? topCard.textContent.replace(/\s+/g, ' ').trim() : '';
       const timeMatch = topText.match(/(\d+\s*(hours?|minutes?|seconds?|days?|weeks?|months?)\s*ago|just now|Reposted\s+\d+\s*\w+\s*ago)/i);
+      const applicantsMatch = topText.match(/(\d+)\s*(people clicked apply|applicants?)/i);
 
-      results[jobId] = timeMatch ? timeMatch[0] : 'Unknown';
+      results[jobId] = (timeMatch ? timeMatch[0] : 'Unknown') + '||' + (applicantsMatch ? applicantsMatch[1] : '0');
     }
 
     return results;

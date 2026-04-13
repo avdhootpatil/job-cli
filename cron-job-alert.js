@@ -55,7 +55,7 @@ function notify(jobs) {
 async function run() {
   const now = new Date().toLocaleString();
   console.log(`\n[${now}] Running job search...`);
-  console.log(`[URL] https://www.linkedin.com/jobs/search?keywords=Frontend%20Developer%2C%20ReactJS%20Developer&location=India&f_TPR=r86400&f_E=4`);
+  console.log(`[URL] https://www.linkedin.com/jobs/search?keywords=Front%20end%20developer&location=India&f_TPR=r86400&f_E=4`);
 
   const transport = new StdioClientTransport({
     command: 'node',
@@ -145,5 +145,5 @@ run();
 setInterval(run, 10 * 60 * 1000);
 
 console.log('LinkedIn Job Alert Cron started — running every 10 minutes');
-console.log(`Searching: "React Developer" in India, past 24 hours`);
+console.log(`Searching: "Front end developer" in India, past 24 hours`);
 console.log(`Logging jobs posted ≤ 5 hours ago`);

@@ -309,19 +309,29 @@ function parseAuthJobCard(
   $: cheerio.CheerioAPI,
   $card: cheerio.Cheerio<Element>,
 ): LinkedInJob | null {
-  const jobId = $card.attr('data-job-id');
+  const titleLink = $card.find('.job-card-list__title--link, .job-card-container__link');
+
+  // LinkedIn often renders every card except the selected one with the literal
+  // placeholder data-job-id="search", which would collapse a whole page of
+  // results into one bogus job. The card's link always carries the real id.
+  const rawId = $card.attr('data-job-id') || '';
+  const jobId = /^\d+$/.test(rawId)
+    ? rawId
+    : extractJobId(titleLink.attr('href') || $card.find('a').first().attr('href') || '') ||
+      extractJobIdFromUrn($card.attr('data-entity-urn') || '');
   if (!jobId) return null;
 
-  const titleLink = $card.find('.job-card-list__title--link, .job-card-container__link');
   const title = titleLink.attr('aria-label')?.replace(/ with verification$/, '').trim()
     || titleLink.find('span[aria-hidden="true"]').text().trim();
   const company = $card.find('.artdeco-entity-lockup__subtitle span').first().text().trim();
   const location = $card.find('.artdeco-entity-lockup__caption span').first().text().trim();
   const companyLogo = $card.find('img').first().attr('src') || undefined;
 
-  // Time and applicants are injected as data attributes by the browser module
+  // Time and applicants are injected as data attributes by the browser module.
+  // Applicants stays undefined when it could not be read, so callers can tell
+  // "unknown" apart from a genuine zero.
   const postedTimeAgo = $card.attr('data-posted-time') || '';
-  const applicants = $card.attr('data-applicants') || '0';
+  const applicants = $card.attr('data-applicants') || undefined;
 
   const cardText = $card.text().toLowerCase();
 
@@ -335,7 +345,7 @@ function parseAuthJobCard(
     jobType: 'full-time',
     postedDate: '',
     postedTimeAgo: postedTimeAgo || 'Unknown',
-    applicants: applicants || '0',
+    applicants,
     salary: undefined,
     url: `${LINKEDIN_BASE}/jobs/view/${jobId}`,
     isEasyApply: cardText.includes('easy apply'),
@@ -552,11 +562,20 @@ export async function searchJobs(
         }
         console.error(`[scraper] Page ${page + 1}: got ${jobs.length} jobs`);
         if (jobs.length === 0) break;
+
+        const countBefore = uniqueJobs.length;
         for (const job of jobs) {
           if (!seenIds.has(job.id)) {
             seenIds.add(job.id);
             uniqueJobs.push(job);
           }
+        }
+
+        // When a search has fewer results than the page size, LinkedIn clamps
+        // `start` and serves page 1 again — stop instead of re-scraping it.
+        if (uniqueJobs.length === countBefore) {
+          console.error(`[scraper] Page ${page + 1}: no new jobs, stopping`);
+          break;
         }
       } catch (err) {
         console.error(`[scraper] Page ${page + 1} failed: ${err instanceof Error ? err.message : err}`);

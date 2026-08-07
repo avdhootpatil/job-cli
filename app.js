@@ -6,6 +6,7 @@ import ora from "ora";
 import readline from "readline";
 import { fileURLToPath } from "url";
 import path from "path";
+import { LOCATION_CHOICES, resolveLocationChoice } from "./locations.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MCP_SERVER_PATH = path.join(
@@ -13,7 +14,13 @@ const MCP_SERVER_PATH = path.join(
   "packages/linkedin-mcp-search/dist/index.js"
 );
 
-function banner() {
+/**
+ * Print the app banner, plus the selected search location once one is chosen.
+ *
+ * @param {string} [locationLabel] Label of the selected location preset.
+ * @returns {void}
+ */
+function banner(locationLabel) {
   console.clear();
   console.log(
     chalk.blueBright.bold(`
@@ -23,6 +30,11 @@ function banner() {
 +=================================================+
 `)
   );
+  if (locationLabel) {
+    console.log(
+      chalk.gray("  Search location: ") + chalk.white.bold(locationLabel)
+    );
+  }
 }
 
 function divider() {
@@ -87,6 +99,65 @@ async function callTool(client, name, args) {
   return JSON.parse(text);
 }
 
+/**
+ * Ask which location preset to search in, re-asking until the answer is valid.
+ *
+ * @param {import("readline").Interface} rl Readline interface to read from.
+ * @returns {Promise<{label: string, locations: string[]}>} The chosen preset.
+ */
+async function chooseLocation(rl) {
+  console.log(chalk.white.bold("\nWhere do you want to search for jobs?\n"));
+  LOCATION_CHOICES.forEach((choice, i) =>
+    console.log(chalk.cyan(`  ${i + 1}`) + chalk.white(`  ${choice.label}`))
+  );
+  divider();
+
+  while (true) {
+    const answer = await ask(rl, "\nEnter choice [Enter=1]: ");
+    const choice = resolveLocationChoice(answer);
+    if (choice) {
+      console.log(chalk.green(`\nSearching jobs in: ${choice.label}`));
+      return choice;
+    }
+    console.log(
+      chalk.red(`Invalid choice. Pick 1-${LOCATION_CHOICES.length}.`)
+    );
+  }
+}
+
+/**
+ * Run the same search once per location and merge the results, de-duped by job
+ * id (a job can surface in more than one city's results).
+ *
+ * @param {import("@modelcontextprotocol/sdk/client/index.js").Client} client Connected MCP client.
+ * @param {string} tool Name of the MCP tool to call, e.g. "search_jobs".
+ * @param {Record<string, unknown>} args Tool arguments, minus `location`.
+ * @param {string[]} locations Locations to search, one query each.
+ * @param {import("ora").Ora} spinner Spinner whose text tracks the current location.
+ * @returns {Promise<{jobs: object[], jobCount: number, totalResults: number}>} Merged results.
+ */
+async function searchAcrossLocations(client, tool, args, locations, spinner) {
+  const seenIds = new Set();
+  const jobs = [];
+  let totalResults = 0;
+
+  for (const location of locations) {
+    if (locations.length > 1) {
+      spinner.text = chalk.blue(`Searching ${location}...`);
+    }
+    const data = await callTool(client, tool, { ...args, location });
+    totalResults += data.totalResults || 0;
+    for (const job of data.jobs || []) {
+      if (!seenIds.has(job.id)) {
+        seenIds.add(job.id);
+        jobs.push(job);
+      }
+    }
+  }
+
+  return { jobs, jobCount: jobs.length, totalResults };
+}
+
 async function showMenu(rl) {
   console.log(chalk.white.bold("\nWhat would you like to do?\n"));
   const options = [
@@ -105,11 +176,11 @@ async function showMenu(rl) {
   return await ask(rl, "\nEnter choice: ");
 }
 
-async function doSearchJobs(client, rl) {
+async function doSearchJobs(client, rl, locationChoice) {
   console.log(chalk.white.bold("\nFull Job Search"));
   divider();
   const keywords = await ask(rl, "Keywords (e.g. Python Developer): ");
-  const location = await ask(rl, "Location [Enter to skip]: ");
+  const location = await ask(rl, `Location [Enter=${locationChoice.label}]: `);
   const remote = await ask(rl, "Workplace - remote/hybrid/on-site [Enter to skip]: ");
   const level = await ask(rl, "Experience - entry-level/mid-senior/director [Enter to skip]: ");
   const datePost = await ask(rl, "Posted - past-24-hours/past-week/past-month [Enter=any]: ");
@@ -117,16 +188,25 @@ async function doSearchJobs(client, rl) {
   const limit = await ask(rl, "Max results (1-50) [Enter=10]: ");
 
   const args = { keywords: keywords || "developer" };
-  if (location.trim()) args.location = location.trim();
   if (remote.trim()) args.workplaceType = [remote.trim()];
   if (level.trim()) args.experienceLevel = [level.trim()];
   if (datePost.trim()) args.datePosted = datePost.trim();
   if (easyApply.trim().toLowerCase() === "y") args.easyApply = true;
   args.limit = parseInt(limit.trim()) || 10;
 
+  const locations = location.trim()
+    ? [location.trim()]
+    : locationChoice.locations;
+
   const spinner = ora(chalk.blue("Searching LinkedIn...")).start();
   try {
-    const data = await callTool(client, "search_jobs", args);
+    const data = await searchAcrossLocations(
+      client,
+      "search_jobs",
+      args,
+      locations,
+      spinner
+    );
     spinner.succeed(
       chalk.green(`Found ${data.jobCount} jobs (${data.totalResults} total)`)
     );
@@ -137,20 +217,34 @@ async function doSearchJobs(client, rl) {
   }
 }
 
-async function doSearchRemote(client, rl) {
+async function doSearchRemote(client, rl, locationChoice) {
   console.log(chalk.white.bold("\nRemote Job Search"));
   divider();
   const keywords = await ask(rl, "Keywords (e.g. React Developer): ");
+  const location = await ask(rl, `Location [Enter=${locationChoice.label}]: `);
   const datePost = await ask(rl, "Posted - past-24-hours/past-week/past-month [Enter=past-week]: ");
   const limit = await ask(rl, "Max results [Enter=10]: ");
 
+  const locations = location.trim()
+    ? [location.trim()]
+    : locationChoice.locations;
+
   const spinner = ora(chalk.blue("Searching remote jobs...")).start();
   try {
-    const data = await callTool(client, "search_remote_jobs", {
-      keywords: keywords || "developer",
-      datePosted: datePost.trim() || "past-week",
-      limit: parseInt(limit.trim()) || 10,
-    });
+    // search_jobs (not search_remote_jobs) — the remote-only tool takes no
+    // location, so it cannot honour the selected location.
+    const data = await searchAcrossLocations(
+      client,
+      "search_jobs",
+      {
+        keywords: keywords || "developer",
+        workplaceType: ["remote"],
+        datePosted: datePost.trim() || "past-week",
+        limit: parseInt(limit.trim()) || 10,
+      },
+      locations,
+      spinner
+    );
     spinner.succeed(chalk.green(`Found ${data.jobCount} remote jobs`));
     if (data.jobs?.length) data.jobs.forEach((job, i) => printJob(job, i));
     else console.log(chalk.yellow("\nNo remote jobs found."));
@@ -159,22 +253,31 @@ async function doSearchRemote(client, rl) {
   }
 }
 
-async function doEntryLevel(client, rl) {
+async function doEntryLevel(client, rl, locationChoice) {
   console.log(chalk.white.bold("\nEntry-Level / Internship Search"));
   divider();
   const keywords = await ask(rl, "Keywords (e.g. Data Analyst): ");
-  const location = await ask(rl, "Location [Enter to skip]: ");
+  const location = await ask(rl, `Location [Enter=${locationChoice.label}]: `);
   const internships = await ask(rl, "Include internships? (y/n) [Enter=yes]: ");
   const limit = await ask(rl, "Max results [Enter=10]: ");
 
+  const locations = location.trim()
+    ? [location.trim()]
+    : locationChoice.locations;
+
   const spinner = ora(chalk.blue("Searching entry-level jobs...")).start();
   try {
-    const data = await callTool(client, "search_entry_level_jobs", {
-      keywords: keywords || "developer",
-      location: location.trim() || undefined,
-      includeInternships: internships.trim().toLowerCase() !== "n",
-      limit: parseInt(limit.trim()) || 10,
-    });
+    const data = await searchAcrossLocations(
+      client,
+      "search_entry_level_jobs",
+      {
+        keywords: keywords || "developer",
+        includeInternships: internships.trim().toLowerCase() !== "n",
+        limit: parseInt(limit.trim()) || 10,
+      },
+      locations,
+      spinner
+    );
     spinner.succeed(chalk.green(`Found ${data.jobCount} entry-level jobs`));
     if (data.jobs?.length) data.jobs.forEach((job, i) => printJob(job, i));
     else console.log(chalk.yellow("\nNo entry-level jobs found."));
@@ -289,17 +392,21 @@ async function main() {
     process.exit(0);
   });
 
+  const locationChoice = await chooseLocation(rl);
+  await ask(rl, chalk.gray("\nPress Enter to continue..."));
+  banner(locationChoice.label);
+
   while (true) {
     const choice = await showMenu(rl);
     switch (choice.trim()) {
       case "1":
-        await doSearchJobs(client, rl);
+        await doSearchJobs(client, rl, locationChoice);
         break;
       case "2":
-        await doSearchRemote(client, rl);
+        await doSearchRemote(client, rl, locationChoice);
         break;
       case "3":
-        await doEntryLevel(client, rl);
+        await doEntryLevel(client, rl, locationChoice);
         break;
       case "4":
         await doJobDetails(client, rl);
@@ -317,7 +424,7 @@ async function main() {
         console.log(chalk.red("\nInvalid choice. Try again."));
     }
     await ask(rl, chalk.gray("\nPress Enter to continue..."));
-    banner();
+    banner(locationChoice.label);
   }
 }
 

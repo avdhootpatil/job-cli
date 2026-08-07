@@ -38,7 +38,16 @@ npm run chrome
 npm run cron
 ```
 
-The cron searches for jobs every 5 minutes, notifies you of new jobs posted within 5 hours, and tracks seen jobs to avoid duplicates.
+3. Pick where to search when prompted:
+
+```
+  1  India
+  2  Dubai, Abudhabi
+```
+
+The cron then searches every 10 minutes, notifies you of new jobs posted within 5 hours, and tracks seen jobs to avoid duplicates. When no terminal is attached (e.g. launched from a real crontab), it skips the prompt and uses option 1.
+
+Option 2 covers two cities — LinkedIn accepts one location per query, so each cycle searches Dubai and Abu Dhabi in turn and merges the results, which makes a cycle take roughly twice as long.
 
 ## Other Commands
 
@@ -62,5 +71,6 @@ linkedin-job-cli/
 ├── apps/web/                       # React + Vite frontend
 ├── app.js                          # Interactive CLI
 ├── cron-job-alert.js               # Background job monitor
+├── locations.mjs                   # Shared search location presets
 └── .seen-jobs.json                 # Tracked jobs (auto-generated)
 ```

@@ -86,10 +86,17 @@ async function getBrowser(): Promise<Browser> {
  * Fetch a single page's HTML — opens a new tab, navigates, grabs HTML, closes tab.
  *
  * @param url Page to load.
- * @returns The page HTML. Job cards carry `data-posted-time` / `data-applicants`
- *   attributes written in-page by annotateCards() for the parser to read.
+ * @param options.interactive When true, wait for job cards, scroll to load more,
+ *   and click each card to capture posted time / applicants. Only the
+ *   authenticated results SPA needs this; server-rendered HTML (the guest search
+ *   endpoint, job detail pages) is complete on arrival, so it defaults to false.
+ * @returns The page HTML. With `interactive`, job cards also carry
+ *   `data-posted-time` / `data-applicants` written in-page by annotateCards().
  */
-export async function getPageHtml(url: string): Promise<string> {
+export async function getPageHtml(
+  url: string,
+  options: { interactive?: boolean } = {},
+): Promise<string> {
   const b = await getBrowser();
   const page = await b.newPage();
 
@@ -98,6 +105,10 @@ export async function getPageHtml(url: string): Promise<string> {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
+
+    if (!options.interactive) {
+      return await withTimeout(page.content(), EVALUATE_TIMEOUT_MS, '');
+    }
 
     // Wait for job cards to render
     try {

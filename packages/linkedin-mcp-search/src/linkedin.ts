@@ -20,6 +20,11 @@ import type {
 
 const LINKEDIN_BASE = 'https://www.linkedin.com';
 
+/** Guest search endpoint: server-rendered job cards, all filters honoured. */
+const GUEST_SEARCH_PATH = '/jobs-guest/jobs/api/seeMoreJobPostings/search';
+/** Cards returned per guest-endpoint request. */
+const GUEST_PAGE_SIZE = 10;
+
 
 const JOB_TYPE_CODES: Record<JobType, string> = {
   'full-time': 'F',
@@ -161,6 +166,51 @@ function buildSearchUrl(params: JobSearchParams): string {
   }
 
   return `${LINKEDIN_BASE}/jobs/search?${sp.toString()}`;
+}
+
+/**
+ * Build a guest search-endpoint URL.
+ *
+ * LinkedIn's "AI-powered job search" replaced the authenticated results page: it
+ * redirects /jobs/search to /jobs/search-results, silently drops the location,
+ * experience and sort filters, and renders cards with hashed class names that
+ * offer nothing stable to select on. This endpoint still serves the classic
+ * server-rendered cards and honours every filter, so searching goes through it.
+ *
+ * @param params Search filters.
+ * @param start Pagination offset, in GUEST_PAGE_SIZE steps.
+ * @returns Absolute URL returning an HTML fragment of job cards.
+ */
+function buildGuestSearchUrl(params: JobSearchParams, start: number): string {
+  const sp = new URLSearchParams();
+
+  if (params.keywords) sp.set('keywords', params.keywords);
+  if (params.location) sp.set('location', params.location);
+  if (params.geoId) sp.set('geoId', params.geoId);
+  if (params.distance) sp.set('distance', params.distance.toString());
+
+  if (params.jobType?.length) {
+    sp.set('f_JT', params.jobType.map(t => JOB_TYPE_CODES[t]).join(','));
+  }
+  if (params.experienceLevel?.length) {
+    sp.set('f_E', params.experienceLevel.map(e => EXPERIENCE_CODES[e]).join(','));
+  }
+  if (params.workplaceType?.length) {
+    const codes = params.workplaceType
+      .filter((w): w is Exclude<WorkplaceType, 'unknown'> => w !== 'unknown')
+      .map(w => WORKPLACE_CODES[w])
+      .join(',');
+    if (codes) sp.set('f_WT', codes);
+  }
+  if (params.datePosted && params.datePosted !== 'any-time') {
+    sp.set('f_TPR', DATE_CODES[params.datePosted]);
+  }
+  if (params.easyApply) sp.set('f_AL', 'true');
+  if (params.companyIds?.length) sp.set('f_C', params.companyIds.join(','));
+  if (params.sortBy === 'most-recent') sp.set('sortBy', 'DD');
+  sp.set('start', start.toString());
+
+  return `${LINKEDIN_BASE}${GUEST_SEARCH_PATH}?${sp.toString()}`;
 }
 
 export function buildPublicJobUrl(params: JobSearchParams): string {
@@ -369,8 +419,11 @@ function parseJobListings(html: string): LinkedInJob[] {
     return jobs;
   }
 
-  // Fall back to guest view (div.base-card)
-  $('div.base-card, li').each((_: number, el: Element) => {
+  // Guest view (div.base-card). Each card sits inside its own <li>, so prefer
+  // the cards themselves and only fall back to list items when absent.
+  const guestCards = $('div.base-card');
+  const candidates = guestCards.length > 0 ? guestCards : $('li');
+  candidates.each((_: number, el: Element) => {
     try {
       const job = parseGuestJobCard($, $(el));
       if (job) jobs.push(job);
@@ -424,8 +477,12 @@ function parseJobDetails(html: string, jobId: string): JobDetails | null {
     ]);
 
     const postedTimeAgo = $('span.posted-time-ago__text').text().trim();
+    // e.g. "Over 200 applicants" / "27 applicants". The figure is what the guest
+    // job-posting endpoint renders; the caption is the older markup.
     const applicants =
-      $('span.num-applicants__caption').text().trim() || undefined;
+      $('figure.num-applicants__figure').text().replace(/\s+/g, ' ').trim() ||
+      $('span.num-applicants__caption').text().replace(/\s+/g, ' ').trim() ||
+      undefined;
     const salary = $('div.salary-main-rail').text().trim() || undefined;
     const companyLinkedInUrl =
       $('a.topcard__org-name-link').attr('href') || undefined;
@@ -544,14 +601,14 @@ export async function searchJobs(
     const seenIds = new Set<string>();
     const uniqueJobs: LinkedInJob[] = [];
     let totalResults = 0;
-    const maxPages = Math.min(Math.ceil(limit / 25), 5);
+    const maxPages = Math.ceil(limit / GUEST_PAGE_SIZE);
 
     for (let page = 0; page < maxPages; page++) {
-      const offset = page * 25;
+      const offset = page * GUEST_PAGE_SIZE;
       if (page > 0) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
-      const url = buildSearchUrl({ ...params, start: offset });
+      const url = buildGuestSearchUrl(params, offset);
       console.error(`[scraper] Fetching page ${page + 1}/${maxPages} (start=${offset})...`);
 
       try {
@@ -636,7 +693,10 @@ export async function searchEntryLevelJobs(
 }
 
 export async function getJobDetails(jobId: string): Promise<JobDetails | null> {
-  const htmlUrl = `/jobs/view/${jobId}`;
+  // Guest job-posting endpoint: server-rendered detail markup with the posted
+  // time, applicant count and job criteria. /jobs/view/<id> now renders the AI
+  // search UI with hashed class names, which nothing can be selected from.
+  const htmlUrl = `/jobs-guest/jobs/api/jobPosting/${jobId}`;
 
   try {
     const html = await getPageHtml(`${LINKEDIN_BASE}${htmlUrl}`);

@@ -27,6 +27,10 @@ const INTERVAL_MS = 10 * 60 * 1000;
 // fewer than this many applicants. Same thresholds for every location.
 const FRESH_WITHIN_HOURS = 5;
 const MAX_APPLICANTS = 50;
+// Search results carry no applicant count, so it costs one extra request per
+// job to check. Only jobs that failed the time test are looked up, newest
+// first, and at most this many per cycle.
+const APPLICANT_LOOKUPS_PER_RUN = 20;
 
 // Guards against a new run starting while the previous one is still scraping —
 // a multi-location run can take longer than INTERVAL_MS.
@@ -145,6 +149,37 @@ function chooseLocation() {
 }
 
 /**
+ * Look up how many people have applied to one job.
+ *
+ * Search results do not include this, so it takes a job-details request. The
+ * count reads like "Over 200 applicants" or "27 applicants"; the leading number
+ * is used, so "Over 200" is treated as 200.
+ *
+ * @param {import('@modelcontextprotocol/sdk/client/index.js').Client} client Connected MCP client.
+ * @param {string} jobId LinkedIn job id.
+ * @returns {Promise<number | undefined>} Applicant count, or undefined when unavailable.
+ */
+async function fetchApplicantCount(client, jobId) {
+  try {
+    const res = await client.callTool(
+      { name: 'get_job_details', arguments: { jobId } },
+      undefined,
+      { timeout: 60000 },
+    );
+    const text = res.content?.[0]?.text;
+    if (!text) return undefined;
+
+    const data = JSON.parse(text);
+    const match = data.job?.applicants?.match(/(\d[\d,]*)/);
+    if (!match) return undefined;
+    const count = Number.parseInt(match[1].replace(/,/g, ''), 10);
+    return Number.isFinite(count) ? count : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Run one search cycle: scrape each location in the preset, notify about fresh
  * jobs, and update the seen-job cache.
  *
@@ -225,14 +260,32 @@ async function run(locationChoice) {
     console.log(`\n[FOUND] ${jobs.length} total jobs`);
 
     const seen = loadSeenJobs();
-    const freshJobs = jobs.filter(job => {
-      if (seen[job.id]) return false;
-      if (isPostedWithinHours(job.postedTimeAgo, FRESH_WITHIN_HOURS)) return true;
-      // Only a real applicant count counts — an unreadable one used to parse as
-      // 0 and mark every such job fresh.
-      const applicants = Number.parseInt(job.applicants ?? '', 10);
-      return Number.isFinite(applicants) && applicants < MAX_APPLICANTS;
-    });
+    const unseen = jobs.filter(job => !seen[job.id]);
+
+    // Anything posted within the window is fresh outright; the rest have to earn
+    // it on applicant count, which needs a per-job lookup.
+    const freshJobs = [];
+    const needsLookup = [];
+    for (const job of unseen) {
+      if (isPostedWithinHours(job.postedTimeAgo, FRESH_WITHIN_HOURS)) freshJobs.push(job);
+      else needsLookup.push(job);
+    }
+
+    const lookups = Math.min(needsLookup.length, APPLICANT_LOOKUPS_PER_RUN);
+    if (lookups > 0) {
+      console.log(`[APPLICANTS] Checking ${lookups} of ${needsLookup.length} older jobs`);
+    }
+    for (let i = 0; i < lookups; i++) {
+      const job = needsLookup[i];
+      const applicants = await fetchApplicantCount(client, job.id);
+      if (applicants !== undefined) job.applicants = String(applicants);
+      if (applicants !== undefined && applicants < MAX_APPLICANTS) freshJobs.push(job);
+    }
+    if (needsLookup.length > lookups) {
+      console.log(
+        `[APPLICANTS] Skipped ${needsLookup.length - lookups} jobs (lookup cap) — they stay unnotified this cycle`,
+      );
+    }
 
     console.log(
       `[FRESH] ${freshJobs.length} jobs (within ${FRESH_WITHIN_HOURS} hours or < ${MAX_APPLICANTS} applicants, not yet notified)`,

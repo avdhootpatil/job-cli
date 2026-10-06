@@ -16,6 +16,16 @@ export const LOCATION_CHOICES = [
       "Abu Dhabi, United Arab Emirates",
     ],
   },
+  { label: "Singapore", locations: ["Singapore"] },
+  {
+    label: "All — India, Singapore, Dubai, Abudhabi",
+    locations: [
+      "India",
+      "Singapore",
+      "Dubai, United Arab Emirates",
+      "Abu Dhabi, United Arab Emirates",
+    ],
+  },
 ];
 
 /**

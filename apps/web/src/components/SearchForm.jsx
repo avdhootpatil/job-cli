@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 
 const DEFAULTS = {
-  search: { keywords: "React JS, NodeJS, Fullstack", location: "India", workplaceType: "", experienceLevel: "", easyApply: "", limit: "50" },
-  remote: { keywords: "React JS, NodeJS, Fullstack", limit: "50" },
+  search: { keywords: "Engineering Manager", location: "India", workplaceType: "", experienceLevel: "", easyApply: "", limit: "50" },
+  remote: { keywords: "Engineering Manager", limit: "50" },
   entry: { keywords: "React JS, NodeJS, Fullstack", location: "India", includeInternships: "true", limit: "50" },
 };
 

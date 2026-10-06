@@ -179,7 +179,7 @@ async function showMenu(rl) {
 async function doSearchJobs(client, rl, locationChoice) {
   console.log(chalk.white.bold("\nFull Job Search"));
   divider();
-  const keywords = await ask(rl, "Keywords (e.g. Python Developer): ");
+  const keywords = await ask(rl, "Keywords [Enter=Engineering Manager]: ");
   const location = await ask(rl, `Location [Enter=${locationChoice.label}]: `);
   const remote = await ask(rl, "Workplace - remote/hybrid/on-site [Enter to skip]: ");
   const level = await ask(rl, "Experience - entry-level/mid-senior/director [Enter to skip]: ");
@@ -187,7 +187,7 @@ async function doSearchJobs(client, rl, locationChoice) {
   const easyApply = await ask(rl, "Easy Apply only? (y/n) [Enter=no]: ");
   const limit = await ask(rl, "Max results (1-50) [Enter=10]: ");
 
-  const args = { keywords: keywords || "developer" };
+  const args = { keywords: keywords || "Engineering Manager" };
   if (remote.trim()) args.workplaceType = [remote.trim()];
   if (level.trim()) args.experienceLevel = [level.trim()];
   if (datePost.trim()) args.datePosted = datePost.trim();
@@ -220,7 +220,7 @@ async function doSearchJobs(client, rl, locationChoice) {
 async function doSearchRemote(client, rl, locationChoice) {
   console.log(chalk.white.bold("\nRemote Job Search"));
   divider();
-  const keywords = await ask(rl, "Keywords (e.g. React Developer): ");
+  const keywords = await ask(rl, "Keywords [Enter=Engineering Manager]: ");
   const location = await ask(rl, `Location [Enter=${locationChoice.label}]: `);
   const datePost = await ask(rl, "Posted - past-24-hours/past-week/past-month [Enter=past-week]: ");
   const limit = await ask(rl, "Max results [Enter=10]: ");
@@ -237,7 +237,7 @@ async function doSearchRemote(client, rl, locationChoice) {
       client,
       "search_jobs",
       {
-        keywords: keywords || "developer",
+        keywords: keywords || "Engineering Manager",
         workplaceType: ["remote"],
         datePosted: datePost.trim() || "past-week",
         limit: parseInt(limit.trim()) || 10,

@@ -8,6 +8,11 @@ import path from 'path';
 import fs from 'fs';
 import readline from 'readline';
 import { LOCATION_CHOICES, resolveLocationChoice } from './locations.mjs';
+import {
+  SEARCH_QUERIES,
+  EXPERIENCE_LEVELS,
+  isRelevantTitle,
+} from './search-profile.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MCP_SERVER_PATH = path.join(
@@ -16,12 +21,16 @@ const MCP_SERVER_PATH = path.join(
 );
 const SEEN_JOBS_FILE = path.join(__dirname, '.seen-jobs.json');
 
-const SEARCH_KEYWORDS = 'Front end developer';
+// What to search for lives in search-profile.mjs; these are the mechanics.
 const SEARCH_DATE_POSTED = 'past-24-hours';
-const SEARCH_EXPERIENCE = ['mid-senior'];
-const SEARCH_LIMIT = 125;
 const SEARCH_TIMEOUT_MS = 300000;
 const INTERVAL_MS = 10 * 60 * 1000;
+// Pause between consecutive searches in a cycle, to keep the request rate on
+// the logged-in LinkedIn session modest.
+const QUERY_DELAY_MS = 3000;
+
+// LinkedIn's f_E codes, for building the logged search URLs.
+const EXPERIENCE_URL_CODES = { 'mid-senior': '4', director: '5' };
 
 // A job is worth notifying about if it was posted this recently, or still has
 // fewer than this many applicants. Same thresholds for every location.
@@ -62,17 +71,28 @@ function saveSeenJobs(seen) {
 /**
  * Build the LinkedIn search URL matching the cron's filters, for logging.
  *
+ * @param {string} keywords Search keywords.
  * @param {string} location Location to search in.
  * @returns {string} The equivalent LinkedIn jobs search URL.
  */
-function searchUrl(location) {
+function searchUrl(keywords, location) {
   const sp = new URLSearchParams({
-    keywords: SEARCH_KEYWORDS,
+    keywords,
     location,
     f_TPR: 'r86400',
-    f_E: '4',
+    f_E: EXPERIENCE_LEVELS.map(level => EXPERIENCE_URL_CODES[level]).join(','),
   });
   return `https://www.linkedin.com/jobs/search?${sp.toString()}`;
+}
+
+/**
+ * Wait for the given number of milliseconds.
+ *
+ * @param {number} ms Delay in milliseconds.
+ * @returns {Promise<void>} Resolves after the delay.
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -195,9 +215,6 @@ async function run(locationChoice) {
 
   const now = new Date().toLocaleString();
   console.log(`\n[${now}] Running job search — ${locationChoice.label}`);
-  for (const location of locationChoice.locations) {
-    console.log(`[URL] ${searchUrl(location)}`);
-  }
 
   const transport = new StdioClientTransport({
     command: 'node',
@@ -211,43 +228,55 @@ async function run(locationChoice) {
   try {
     await client.connect(transport);
 
-    // LinkedIn takes one location per query, so search each in turn and merge
-    // the results, de-duped by job id.
+    // LinkedIn takes one keyword string and one location per query, so run
+    // every role query in every location and merge the results, de-duped by
+    // job id (the same posting often matches several queries).
     const jobs = [];
     const jobIds = new Set();
+    let searchCount = 0;
 
     for (const location of locationChoice.locations) {
-      if (locationChoice.locations.length > 1) {
-        console.log(`[SEARCH] ${location}...`);
-      }
+      for (const query of SEARCH_QUERIES) {
+        if (searchCount++ > 0) await sleep(QUERY_DELAY_MS);
+        console.log(`[SEARCH] "${query.keywords}" in ${location}`);
+        console.log(`[URL] ${searchUrl(query.keywords, location)}`);
 
-      const res = await client.callTool({
-        name: 'search_jobs',
-        arguments: {
-          keywords: SEARCH_KEYWORDS,
-          location,
-          datePosted: SEARCH_DATE_POSTED,
-          experienceLevel: SEARCH_EXPERIENCE,
-          limit: SEARCH_LIMIT,
-        },
-      }, undefined, { timeout: SEARCH_TIMEOUT_MS });
+        // One failed search should not cost the rest of the cycle.
+        try {
+          const res = await client.callTool({
+            name: 'search_jobs',
+            arguments: {
+              keywords: query.keywords,
+              location,
+              datePosted: SEARCH_DATE_POSTED,
+              experienceLevel: EXPERIENCE_LEVELS,
+              limit: query.limit,
+            },
+          }, undefined, { timeout: SEARCH_TIMEOUT_MS });
 
-      const text = res.content?.[0]?.text;
-      if (!text) {
-        console.log(`[NO RESPONSE] ${location}`);
-        continue;
-      }
+          const text = res.content?.[0]?.text;
+          if (!text) {
+            console.log(`  [NO RESPONSE]`);
+            continue;
+          }
 
-      const data = JSON.parse(text);
-      if (!data.success || !data.jobs?.length) {
-        console.log(`[NO JOBS FOUND] ${location}`);
-        continue;
-      }
+          const data = JSON.parse(text);
+          if (!data.success || !data.jobs?.length) {
+            console.log(`  [NO JOBS FOUND]`);
+            continue;
+          }
 
-      for (const job of data.jobs) {
-        if (!jobIds.has(job.id)) {
-          jobIds.add(job.id);
-          jobs.push(job);
+          let added = 0;
+          for (const job of data.jobs) {
+            if (!jobIds.has(job.id)) {
+              jobIds.add(job.id);
+              jobs.push(job);
+              added++;
+            }
+          }
+          console.log(`  ${data.jobs.length} jobs, ${added} new to this cycle`);
+        } catch (err) {
+          console.log(`  [SEARCH FAILED] ${err.message}`);
         }
       }
     }
@@ -257,10 +286,15 @@ async function run(locationChoice) {
       return;
     }
 
-    console.log(`\n[FOUND] ${jobs.length} total jobs`);
+    // Keyword search also returns plain developer and non-software roles;
+    // only leadership titles that fit the profile are alert candidates.
+    const relevant = jobs.filter(job => isRelevantTitle(job.title));
+    console.log(
+      `\n[FOUND] ${jobs.length} total jobs, ${relevant.length} match the profile`,
+    );
 
     const seen = loadSeenJobs();
-    const unseen = jobs.filter(job => !seen[job.id]);
+    const unseen = relevant.filter(job => !seen[job.id]);
 
     // Anything posted within the window is fresh outright; the rest have to earn
     // it on applicant count, which needs a per-job lookup.
@@ -345,8 +379,11 @@ async function main() {
 
   console.log('\nLinkedIn Job Alert Cron started — running every 10 minutes');
   console.log(
-    `Searching: "${SEARCH_KEYWORDS}" in ${locationChoice.label}, past 24 hours`,
+    `Searching in ${locationChoice.label}, past 24 hours, ${EXPERIENCE_LEVELS.join(' + ')} level:`,
   );
+  for (const query of SEARCH_QUERIES) {
+    console.log(`  - "${query.keywords}"`);
+  }
   console.log(
     `Alerting on jobs posted ≤ ${FRESH_WITHIN_HOURS} hours ago or with < ${MAX_APPLICANTS} applicants`,
   );

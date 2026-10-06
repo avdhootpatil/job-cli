@@ -43,11 +43,23 @@ npm run cron
 ```
   1  India
   2  Dubai, Abudhabi
+  3  Singapore
+  4  All — India, Singapore, Dubai, Abudhabi
 ```
 
-The cron then searches every 10 minutes, notifies you of new jobs posted within 5 hours, and tracks seen jobs to avoid duplicates. When no terminal is attached (e.g. launched from a real crontab), it skips the prompt and uses option 1.
+The cron then searches every 10 minutes, notifies you of new jobs posted within 5 hours (or with fewer than 50 applicants), and tracks seen jobs to avoid duplicates. When no terminal is attached (e.g. launched from a real crontab), it skips the prompt and uses option 1.
 
-Option 2 covers two cities — LinkedIn accepts one location per query, so each cycle searches Dubai and Abu Dhabi in turn and merges the results, which makes a cycle take roughly twice as long.
+Options 2 and 4 cover several locations — LinkedIn accepts one location per query, so each cycle searches them in turn and merges the results. A cycle takes roughly as many times longer as there are locations; option 4 can outlast the 10-minute interval, in which case the next cycle is skipped.
+
+### What the cron searches for
+
+The search profile lives in `search-profile.mjs` — edit it to change target roles without touching the cron:
+
+- **`SEARCH_QUERIES`** — one LinkedIn keyword search per role family: management (Engineering Manager, Software Development Manager, Head of Mobile), team lead (React Native Lead, Frontend Lead) and senior IC (Senior React Native Developer, Senior Frontend Developer, Mobile Architect, Staff Mobile Engineer). Each runs in every selected location, and results are merged and de-duped.
+- **`EXPERIENCE_LEVELS`** — Mid-Senior and Director.
+- **`isRelevantTitle`** — management titles (manager, head, director, VP) are alerted on whatever the stack; lead and senior titles (lead, architect, principal, staff, senior) only when the title names a web or mobile stack (React, frontend, mobile, iOS, Android, …). Non-software ones (mechanical, civil, sales, product manager, …) are dropped.
+
+Each query adds scraping time, so a cycle runs one search per query per location with a short pause between them. If a cycle outlasts the 10-minute interval, the next one is skipped rather than overlapping.
 
 ## Other Commands
 
@@ -72,5 +84,6 @@ linkedin-job-cli/
 ├── app.js                          # Interactive CLI
 ├── cron-job-alert.js               # Background job monitor
 ├── locations.mjs                   # Shared search location presets
+├── search-profile.mjs              # Target roles, levels, title filter for the cron
 └── .seen-jobs.json                 # Tracked jobs (auto-generated)
 ```

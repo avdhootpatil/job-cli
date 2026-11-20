@@ -1,16 +1,28 @@
 /**
- * Browser module - Connects to an already-running Chrome with remote debugging.
+ * Browser module - Launches a headless Chrome for every scrape session.
  *
- * Start Chrome once with:
- *   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-scraper"
+ * Chrome runs with the dedicated scraper profile (`~/.chrome-scraper` by
+ * default) so the LinkedIn session saved there is reused without opening a
+ * window. Log in once with:
+ *   npm run chrome   (opens a visible Chrome on that profile — sign in, then quit it)
  *
- * Then the scraper connects to it and uses your existing LinkedIn session.
+ * Overrides (all optional):
+ *   CHROME_PATH          executable to launch
+ *   CHROME_USER_DATA_DIR profile directory holding the LinkedIn session
+ *   CHROME_HEADLESS      set to "false" to watch the browser while debugging
  */
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 
-const DEBUGGING_PORT = process.env.CHROME_DEBUG_PORT || '9222';
-const DEBUGGING_URL = `http://127.0.0.1:${DEBUGGING_PORT}`;
+const CHROME_PATH =
+  process.env.CHROME_PATH ||
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const USER_DATA_DIR =
+  process.env.CHROME_USER_DATA_DIR || path.join(os.homedir(), '.chrome-scraper');
+const HEADLESS = process.env.CHROME_HEADLESS !== 'false';
 
 /** Ceiling for any single CDP call, so a wedged tab can never stall a run. */
 const PROTOCOL_TIMEOUT_MS = 60000;
@@ -20,6 +32,13 @@ const EVALUATE_TIMEOUT_MS = 15000;
 const TIME_EXTRACTION_BUDGET_MS = 120000;
 /** How long to let the detail panel settle after clicking a card. */
 const CARD_SETTLE_MS = 1500;
+/**
+ * LinkedIn answers bursts of requests with HTTP 429 and a bot-challenge page
+ * that parses as zero jobs. Retry a 429 this many times, waiting
+ * RATE_LIMIT_BACKOFF_MS × attempt between tries, before giving up.
+ */
+const RATE_LIMIT_RETRIES = 2;
+const RATE_LIMIT_BACKOFF_MS = 3000;
 
 let browser: Browser | null = null;
 
@@ -55,26 +74,87 @@ async function withTimeout<T>(
 }
 
 /**
- * Connect to (or reuse the connection to) the debugging Chrome instance.
+ * Clear Chrome's profile lock when the Chrome that took it is no longer running.
  *
- * @returns The connected browser.
- * @throws When Chrome is not reachable on the debugging port.
+ * Chrome leaves `SingletonLock` (a symlink to `<host>-<pid>`) behind after a
+ * crash or a force-quit, and then refuses to start on the profile at all. When
+ * the recorded pid is dead the lock is stale and safe to remove. When it is
+ * alive, another Chrome genuinely owns the profile, and that pid is returned so
+ * the launch error can name it.
+ *
+ * @returns The pid of a live Chrome holding the profile, or undefined.
+ */
+function clearStaleProfileLock(): number | undefined {
+  const lock = path.join(USER_DATA_DIR, 'SingletonLock');
+  let target: string;
+  try {
+    target = fs.readlinkSync(lock);
+  } catch {
+    return undefined; // no lock
+  }
+
+  const pid = Number.parseInt(target.slice(target.lastIndexOf('-') + 1), 10);
+  if (Number.isFinite(pid)) {
+    try {
+      process.kill(pid, 0); // throws when the process does not exist
+      return pid;
+    } catch {
+      // fall through: owner is gone
+    }
+  }
+
+  console.error(`[browser] Removing stale profile lock (${target})`);
+  for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    try {
+      fs.unlinkSync(path.join(USER_DATA_DIR, name));
+    } catch {}
+  }
+  return undefined;
+}
+
+/**
+ * Launch (or reuse) the headless Chrome used for scraping.
+ *
+ * @returns The running browser.
+ * @throws When Chrome cannot be started, e.g. the executable is missing or the
+ *   profile is already open in another Chrome.
  */
 async function getBrowser(): Promise<Browser> {
   if (browser && browser.connected) return browser;
 
+  const holder = clearStaleProfileLock();
+  if (holder !== undefined) {
+    throw new Error(
+      `Another Chrome (pid ${holder}) is already open on the profile ${USER_DATA_DIR}. ` +
+      `Quit it first — Chrome refuses to start twice on the same profile. ` +
+      `Set CHROME_USER_DATA_DIR to use a different profile.`
+    );
+  }
+
   try {
-    console.error(`[browser] Connecting to Chrome on port ${DEBUGGING_PORT}...`);
-    browser = await puppeteer.connect({
-      browserURL: DEBUGGING_URL,
+    console.error(
+      `[browser] Launching ${HEADLESS ? 'headless ' : ''}Chrome with profile ${USER_DATA_DIR}...`,
+    );
+    browser = await puppeteer.launch({
+      executablePath: CHROME_PATH,
+      headless: HEADLESS,
+      userDataDir: USER_DATA_DIR,
       protocolTimeout: PROTOCOL_TIMEOUT_MS,
+      defaultViewport: { width: 1280, height: 900 },
+      args: ['--no-first-run', '--no-default-browser-check', '--disable-gpu'],
+      // The MCP server's own SIGINT/SIGTERM handlers call closeBrowser(), which
+      // shuts Chrome down cleanly. Puppeteer's default handlers would SIGKILL
+      // it first and leave a stale SingletonLock in the profile.
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
     });
-    console.error(`[browser] Connected to Chrome`);
+    console.error(`[browser] Chrome started`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `Cannot connect to Chrome. Make sure Chrome is running with remote debugging:\n` +
-      `  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-scraper"\n\n` +
+      `Cannot launch Chrome at ${CHROME_PATH}.\n` +
+      `Set CHROME_PATH or CHROME_USER_DATA_DIR to override.\n\n` +
       `Original error: ${msg}`
     );
   }
@@ -101,10 +181,21 @@ export async function getPageHtml(
   const page = await b.newPage();
 
   try {
-    await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
+    for (let attempt = 0; ; attempt++) {
+      const response = await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
+      if (response?.status() !== 429) break;
+      if (attempt >= RATE_LIMIT_RETRIES) {
+        throw new Error(
+          `LinkedIn rate limited this request (HTTP 429) ${attempt + 1} times — wait a few minutes before retrying`,
+        );
+      }
+      const delay = RATE_LIMIT_BACKOFF_MS * (attempt + 1);
+      console.error(`[browser] HTTP 429 from LinkedIn — retrying in ${delay / 1000}s`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
 
     if (!options.interactive) {
       return await withTimeout(page.content(), EVALUATE_TIMEOUT_MS, '');
@@ -345,13 +436,14 @@ async function annotateCards(page: Page, searchUrl: string): Promise<number> {
 }
 
 /**
- * Disconnect from Chrome (leaves the browser itself running).
+ * Shut down the launched Chrome.
  *
- * @returns Resolves once disconnected.
+ * @returns Resolves once the browser process has exited.
  */
 export async function closeBrowser(): Promise<void> {
   if (browser) {
-    browser.disconnect();
+    const b = browser;
     browser = null;
+    await withTimeout(b.close(), 10000, undefined);
   }
 }
